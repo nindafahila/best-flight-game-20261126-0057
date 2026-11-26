@@ -1,31 +1,12 @@
 // Renderer: langit, terrain perspektif, awan, cincin, landasan, rumah,
 // dan pesawat kargo — semuanya digambar dari kode di atas canvas 2D.
 import { RUNWAYS } from './world.js';
+import { drawSkyScene } from './sky.js';
+import { drawSeaDetail } from './sea.js';
+import { terrainColor, drawPalms, drawTownDetail } from './terrain.js';
 
 const TAU = Math.PI * 2;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-
-// Warna permukaan terrain.
-const SURFACE_COLORS = {
-  deep: '#155a8a',
-  shallow: '#2fa3c7',
-  sand: '#e6cf96',
-  grass: '#5da24a',
-  forest: '#3e7a34',
-  rock: '#8a8a7a',
-  town: '#cbb98f',
-  townRoof: '#b5543a',
-  runway: '#4a4d52',
-};
-
-function mixColor(a, b, t) {
-  const pa = parseInt(a.slice(1), 16);
-  const pb = parseInt(b.slice(1), 16);
-  const r = Math.round(((pa >> 16) & 255) + (((pb >> 16) & 255) - ((pa >> 16) & 255)) * t);
-  const g = Math.round(((pa >> 8) & 255) + (((pb >> 8) & 255) - ((pa >> 8) & 255)) * t);
-  const bl = Math.round((pa & 255) + ((pb & 255) - (pa & 255)) * t);
-  return `rgb(${r},${g},${bl})`;
-}
 
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
@@ -76,52 +57,6 @@ export function createRenderer(canvas) {
     };
   }
 
-  function drawSky(cam, focal, horizonY, storm, time) {
-    const top = storm ? '#1c2436' : '#2f7fd0';
-    const mid = storm ? '#4a5468' : '#7ec3ee';
-    const grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, top);
-    grad.addColorStop(Math.max(0.05, horizonY / H), mid);
-    grad.addColorStop(Math.min(1, horizonY / H + 0.08), storm ? '#5c6675' : '#cfe9f7');
-    grad.addColorStop(1, storm ? '#3a3f4a' : '#8fc3e8');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, W, H);
-    // Matahari (redup saat badai).
-    const sun = { x: cam.pos[0] + 5000, y: cam.pos[1] + 2600, z: cam.pos[2] - 8000 };
-    const sp = makeProjector(cam, focal, horizonY)(sun.x, sun.y, sun.z);
-    if (sp) {
-      const glow = ctx.createRadialGradient(sp.x, sp.y, 4, sp.x, sp.y, 90);
-      glow.addColorStop(0, storm ? 'rgba(220,220,200,0.5)' : 'rgba(255,244,180,0.95)');
-      glow.addColorStop(0.25, storm ? 'rgba(220,220,200,0.18)' : 'rgba(255,220,120,0.5)');
-      glow.addColorStop(1, 'rgba(255,220,120,0)');
-      ctx.fillStyle = glow;
-      ctx.fillRect(sp.x - 100, sp.y - 100, 200, 200);
-      ctx.fillStyle = storm ? '#d8d8c8' : '#fff3b0';
-      ctx.beginPath();
-      ctx.arc(sp.x, sp.y, storm ? 22 : 30, 0, TAU);
-      ctx.fill();
-    }
-    void time;
-  }
-
-  function drawClouds(world, cam, focal, horizonY, time, storm) {
-    ctx.save();
-    for (const c of world.clouds) {
-      const cx = c.x + ((time * c.speed) % 4000);
-      const p = makeProjector(cam, focal, horizonY)(cx, c.y, c.z);
-      if (!p || p.d > 9000) continue;
-      const s = (c.size * focal) / p.d;
-      if (s < 4) continue;
-      ctx.fillStyle = storm ? 'rgba(52,58,72,0.85)' : 'rgba(255,255,255,0.88)';
-      for (let i = -1; i <= 1; i += 1) {
-        ctx.beginPath();
-        ctx.ellipse(p.x + i * s * 0.55, p.y + (i === 0 ? -s * 0.12 : s * 0.08), s * 0.62, s * 0.3, 0, 0, TAU);
-        ctx.fill();
-      }
-    }
-    ctx.restore();
-  }
-
   // Terrain: strip-strip tanah dari jauh ke dekat, diwarnai per permukaan.
   function drawTerrain(world, cam, focal, horizonY, storm) {
     const fogColor = storm ? '#5c6675' : '#bcd9ea';
@@ -166,7 +101,8 @@ export function createRenderer(canvas) {
         const mz = (a.z + b.z + c.z + dpt.z) / 4;
         const surf = world.surfaceAt(mx, mz);
         const fog = clamp(a.d / 2200, 0, 0.8);
-        const fill = mixColor(SURFACE_COLORS[surf] || '#5da24a', fogColor, fog);
+        const avgY = (a.y + b.y + c.y + dpt.y) / 4;
+        const fill = terrainColor(surf, avgY, mx, mz, fog, fogColor, storm);
         ctx.fillStyle = fill;
         ctx.strokeStyle = fill;
         ctx.lineWidth = 1;
@@ -418,11 +354,13 @@ export function createRenderer(canvas) {
     // Garis horizon: proyeksikan titik jauh setinggi kamera.
     const horizonProbe = makeProjector(cam, focal, H * 0.45)(cam.pos[0] + cam.fwd[0] * 4000, cam.pos[1], cam.pos[2] + cam.fwd[2] * 4000);
     const horizonY = horizonProbe ? horizonProbe.y : H * 0.45;
-    drawSky(cam, focal, horizonY, storm, time);
-    drawClouds(world, cam, focal, horizonY, time, storm);
+    drawSkyScene(ctx, W, H, makeProjector(cam, focal, horizonY), cam, focal, horizonY, storm, time, world);
     drawTerrain(world, cam, focal, horizonY, storm);
+    drawSeaDetail(ctx, W, H, makeProjector(cam, focal, horizonY), cam, focal, horizonY, storm, time);
     drawRunwayMarkings(cam, focal, horizonY);
     drawHouses(world, cam, focal, horizonY);
+    drawPalms(ctx, world, makeProjector(cam, focal, horizonY), focal, time);
+    drawTownDetail(ctx, world, makeProjector(cam, focal, horizonY), focal);
     drawRings(mission, cam, focal, horizonY, time);
     drawPlane(plane, time, cameraMode);
     if (storm) drawRain(time);

@@ -12,6 +12,7 @@ import { drawHUD, buildMinimap } from './hud.js';
 import { ACTION_CONFIRM, ACTION_PAUSE, ACTION_CAMERA, ACTION_MUTE, ACTION_RESTART, ACTION_HELP, createInput } from './input.js';
 import { createSound } from './sound.js';
 import { buildShotState } from './shots.js';
+import { drawTitleScreen, drawBriefing, drawMissionResult } from './polish.js';
 
 const params = new URLSearchParams(window.location.search);
 const shotName = params.get('shot');
@@ -32,6 +33,7 @@ const SCREEN_PAUSED = 'paused';
 const SCREEN_OVER = 'over';
 const SCREEN_WIN = 'win';
 const SCREEN_MISSION = 'mission';
+const SCREEN_BRIEF = 'brief';
 
 let screen = SCREEN_TITLE;
 let plane = createPlaneState();
@@ -47,6 +49,8 @@ let helpOpen = false;
 let muted = false;
 let crashReason = '';
 let landedSoft = false;
+let lastBonus = 0;
+let lastLanding = 0;
 let lowFuelWarned = false;
 let stallWarned = false;
 
@@ -84,7 +88,9 @@ function startMission(index) {
   message = '';
   lowFuelWarned = false;
   stallWarned = false;
-  screen = SCREEN_PLAY;
+  lastBonus = 0;
+  lastLanding = 0;
+  screen = SCREEN_BRIEF;
   announce(`${MISSIONS[index].name}. ${MISSIONS[index].brief}`);
 }
 
@@ -163,6 +169,7 @@ function step(dt) {
   if (result.event === 'landed') {
     landedSoft = result.soft;
     const gained = landingScore(result.soft, plane);
+    lastLanding = gained;
     score += gained;
     mission.landed = true;
     showMessage(eventMessage('landed', result.soft));
@@ -179,6 +186,7 @@ function step(dt) {
 
 function finishMission() {
   const bonus = timeBonus(mission);
+  lastBonus = bonus;
   score += bonus;
   mission.done = true;
   showMessage(`${eventMessage('mission-done')} Bonus waktu +${bonus}`);
@@ -208,7 +216,10 @@ function handleActions() {
   if (actions & ACTION_CONFIRM) {
     sound.unlock();
     if (screen === SCREEN_TITLE || screen === SCREEN_OVER || screen === SCREEN_WIN) startGame();
-    else if (screen === SCREEN_MISSION) startMission(mission.index + 1);
+    else if (screen === SCREEN_BRIEF) {
+      screen = SCREEN_PLAY;
+      announce('Misi dimulai.');
+    } else if (screen === SCREEN_MISSION) startMission(mission.index + 1);
     else if (screen === SCREEN_PAUSED) screen = SCREEN_PLAY;
   }
   if (actions & ACTION_PAUSE) {
@@ -220,39 +231,6 @@ function handleActions() {
       announce('Lanjut.');
     }
   }
-}
-
-function drawTitle(ctx, W, H) {
-  ctx.fillStyle = 'rgba(8,20,34,0.45)';
-  ctx.fillRect(0, 0, W, H);
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd23e';
-  ctx.font = 'bold 54px sans-serif';
-  ctx.fillText('SKY COURIER', W / 2, H * 0.30);
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 26px sans-serif';
-  ctx.fillText('Pulau Karang', W / 2, H * 0.30 + 40);
-  ctx.fillStyle = '#eaf6ff';
-  ctx.font = '18px sans-serif';
-  ctx.fillText('Terbang antar pulau, lewati cincin emas, antar kargo, dan mendarat sebelum badai datang.', W / 2, H * 0.30 + 78);
-  ctx.fillText('3 misi • bahan bakar terbatas • pendaratan dinilai', W / 2, H * 0.30 + 106);
-  // Tombol mulai.
-  ctx.fillStyle = '#ff9d00';
-  ctx.beginPath();
-  ctx.roundRect(W / 2 - 165, H * 0.52, 330, 56, 12);
-  ctx.fill();
-  ctx.fillStyle = '#1a1206';
-  ctx.font = 'bold 21px sans-serif';
-  ctx.fillText('MULAI TERBANG  (Enter)', W / 2, H * 0.52 + 37);
-  ctx.fillStyle = '#eaf6ff';
-  ctx.font = '15px sans-serif';
-  const lines = [
-    'W / S — throttle naik / turun      Panah Atas-Bawah — pitch',
-    'Panah Kiri-Kanan — belok (bank)    Spasi — rem udara',
-    'C — kamera kejar / kokpit    P — jeda    R — ulang misi    M — suara    H — bantuan',
-    `Skor terbaik: ${best}`,
-  ];
-  lines.forEach((line, i) => ctx.fillText(line, W / 2, H * 0.66 + i * 26));
 }
 
 function drawOverlay(ctx, W, H, title, lines, accent) {
@@ -287,7 +265,11 @@ function draw() {
     lookYaw,
   });
   if (screen === SCREEN_TITLE) {
-    drawTitle(ctx, W, H);
+    drawTitleScreen(ctx, W, H, best);
+    return;
+  }
+  if (screen === SCREEN_BRIEF) {
+    drawBriefing(ctx, W, H, mission.def, mission.index, MISSIONS.length, time);
     return;
   }
   drawHUD(ctx, {
@@ -314,11 +296,18 @@ function draw() {
   } else if (screen === SCREEN_PAUSED) {
     drawOverlay(ctx, W, H, 'JEDA', ['Tekan P atau Enter untuk lanjut.', `Misi: ${mission.def.name}   Skor: ${score}`]);
   } else if (screen === SCREEN_MISSION) {
-    drawOverlay(ctx, W, H, 'MISI SELESAI!', [
-      `${mission.def.name} — semua cincin dilewati${mission.def.landAt ? ' dan kargo mendarat' : ''}.`,
-      `Skor sementara: ${score}`,
-      'Tekan Enter untuk misi berikutnya.',
-    ]);
+    drawMissionResult(ctx, W, H, {
+      def: mission.def,
+      ringsPassed: mission.ringsPassed,
+      ringCount: mission.def.ringCount,
+      landed: mission.landed,
+      landedSoft,
+      landingPoints: lastLanding,
+      bonus: lastBonus,
+      score,
+      best,
+      isLast: mission.index + 1 >= MISSIONS.length,
+    });
   } else if (screen === SCREEN_OVER) {
     const reason = crashReason === 'crash-water' ? 'Pesawat jatuh ke laut.'
       : crashReason === 'fuel' ? 'Bahan bakar habis di tengah jalan.'
@@ -377,8 +366,8 @@ if (shotName) {
       }
     } else {
       accumulator = 0;
-      // Latar judul tetap hidup: awan bergerak, pesawat diam di landasan.
-      if (screen === SCREEN_TITLE) time += elapsed;
+      // Latar judul & briefing tetap hidup: awan bergerak, pesawat diam di landasan.
+      if (screen === SCREEN_TITLE || screen === SCREEN_BRIEF) time += elapsed;
     }
     draw();
   }
